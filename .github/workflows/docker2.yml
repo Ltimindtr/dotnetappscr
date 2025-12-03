@@ -1,94 +1,104 @@
-name: Build & Push Docker Image to ACR (Windows Service Principal)
+
+name: Build & Push Docker Image to ACR (Windows, OIDC)
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
 
 jobs:
   build:
     runs-on: windows-latest
+
     permissions:
-      id-token: write   # harmless, enabled; useful if you later switch to OIDC
+      id-token: write       # required for OIDC
       contents: read
 
     env:
-      # Service Principal credentials (populate in repo env or use secrets-to-env mapping)
-      AZURE_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID:        ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_SECRET:    ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_SUBSCRIPTION_ID:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      # ACR and image info
-      AZURE_ACR_NAME:        ${{ secrets.AZURE_ACR_NAME }}         # e.g., myregistry
-      IMAGE_NAME:      hello-aspnet48
-      IMAGE_TAG_SHA:   ${{ github.sha }}
-      IMAGE_LATEST:    latest
+      # ===== ACR and image info =====
+      AZURE_ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}   # e.g., myregistry (no FQDN)
+      IMAGE_NAME: hello-aspnet48
+      IMAGE_TAG_SHA: ${{ github.sha }}
+      IMAGE_LATEST: latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------- Azure login via OIDC ----------
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          auth-type: OIDC
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}         # App Registration (Service Principal) application (client) ID
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}         # Directory (tenant) ID
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange              # must match your federated credential audience
+          allow-no-subscriptions: true                      # avoids failure if SP lacks subscription-level role; we still pass subscription-id
+
+      # ---------- Optional: DNS sanity check for ACR ----------
       - name: DNS check for ACR (optional)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not $env:AZURE_ACR_NAME) { throw "AZURE_ACR_NAME not set" }
-          $fqdn = "$($env:AZURE_ACR_NAME).azurecr.io"
+          if (:IsNullOrWhiteSpace("${{ env.AZURE_ACR_NAME }}")) {
+            throw "AZURE_ACR_NAME is not set"
+          }
+          $fqdn = "${{ env.AZURE_ACR_NAME }}.azurecr.io"
           Write-Host "Testing DNS for $fqdn"
           Resolve-DnsName $fqdn -ErrorAction Stop | Format-Table
 
-      - name: Azure login (Service Principal)
-        uses: azure/login@v2
-        with:
-          client-id:        ${{ env.AZURE_CLIENT_ID }}
-          tenant-id:        ${{ env.AZURE_TENANT_ID }}
-          client-secret:    ${{ env.AZURE_CLIENT_SECRET }}
-          subscription-id:  ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: ACR login (Service Principal)
+      # ---------- ACR login (uses current Azure context) ----------
+      - name: ACR login (OIDC session)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          az acr login --name $env:AZURE_ACR_NAME
+          az acr login --name "${{ env.AZURE_ACR_NAME }}"
 
+      # ---------- Build Windows container image ----------
       - name: Build Docker image (Windows)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not $env:IMAGE_TAG_SHA) { throw "IMAGE_TAG_SHA not set" }
-          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # <-- FQDN
-          $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
-          $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
-          $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
+
+          if ([string]::IsNullOrWhiteSpace("${{ env.IMAGE_TAG_SHA }}")) {
+   throw "IMAGE_TAG_SHA not set"
+          }
+
+          $REG = "${{ env.AZURE_ACR_NAME }}.azurecr.io"   # FQDN for tagging/push
+          $SHA7 = "${{ env.IMAGE_TAG_SHA }}".Substring(0,7)
+          $IMG_SHA    = "$REG/${{ env.IMAGE_NAME }}:$SHA7"
+          $IMG_LATEST = "$REG/${{ env.IMAGE_NAME }}:${{ env.IMAGE_LATEST }}"
 
           Write-Host "Building Docker image with tags:"
           Write-Host "  $IMG_SHA"
           Write-Host "  $IMG_LATEST"
           Write-Host "Current Directory: $(Get-Location)"
 
-          docker build -t $IMG_SHA -t $IMG_LATEST .
+          # Windows container builds on GitHub-hosted runners generally require Hyper-V isolation
+          docker build --isolation=hyperv -t $IMG_SHA -t $IMG_LATEST .
 
-          # Fail fast if tags not present locally
-          docker image inspect $IMG_SHA    | Out-Null
-          docker image inspect $IMG_LATEST | Out-Null
+          # Fail fast if tags didn’t materialize locally
+          docker image inspect $IMG_SHA     | Out-Null
+          docker image inspect $IMG_LATEST  | Out-Null
 
-      - name: Push image to ACR
+      # ---------- Push both tags to ACR ----------
+      - name: Push images to ACR
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"
-          $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
-          $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
-          $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
+
+          $REG = "${{ env.AZURE_ACR_NAME }}.azurecr.io"
+          $SHA7 = "${{ env.IMAGE_TAG_SHA }}".Substring(0,7)
+          $IMG_SHA    = "$REG/${{ env.IMAGE_NAME }}:$SHA7"
+          $IMG_LATEST = "$REG/${{ env.IMAGE_NAME }}:${{ env.IMAGE_LATEST }}"
 
           Write-Host "Pushing Docker images to ACR:"
           Write-Host "  $IMG_SHA"
           Write-Host "  $IMG_LATEST"
           Write-Host "Current Directory: $(Get-Location)"
-
           
           docker push $IMG_SHA
           docker push $IMG_LATEST
-
-          docker push $IMG_SHA
+         docker push $IMG_SHA
           docker push $IMG_LATEST
