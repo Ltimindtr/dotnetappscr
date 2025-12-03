@@ -1,0 +1,81 @@
+name: Build & Push Docker Image to ACR (Windows Service Principal)
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      id-token: write   # Allow using OIDC for authentication
+      contents: read
+
+    env:
+      AZURE_ACR_NAME:         ${{ secrets.AZURE_ACR_NAME }}  # ACR Name
+      IMAGE_NAME:             hello-aspnet48
+      IMAGE_TAG_SHA:          ${{ github.sha }}
+      IMAGE_LATEST:           latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: DNS check for ACR (optional)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:AZURE_ACR_NAME) { throw "AZURE_ACR_NAME not set" }
+          $fqdn = "$($env:AZURE_ACR_NAME).azurecr.io"
+          Write-Host "Testing DNS for $fqdn"
+          Resolve-DnsName $fqdn -ErrorAction Stop | Format-Table
+
+      - name: Azure login (OIDC - Azure CLI)
+        uses: azure/login@v2
+        with:
+          auth-type: "azurecli"   # Use OIDC authentication
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login (Azure CLI)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          az acr login --name $env:AZURE_ACR_NAME
+
+      - name: Build Docker image (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:IMAGE_TAG_SHA) { throw "IMAGE_TAG_SHA not set" }
+          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # FQDN
+          $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
+          $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
+          $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
+
+          Write-Host "Building Docker image with tags:"
+          Write-Host "  $IMG_SHA"
+          Write-Host "  $IMG_LATEST"
+          Write-Host "Current Directory: $(Get-Location)"
+
+          docker build -t $IMG_SHA -t $IMG_LATEST .
+
+      - name: Push image to ACR
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"
+          $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
+          $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
+          $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
+
+          Write-Host "Pushing Docker images to ACR:"
+          Write-Host "  $IMG_SHA"
+          Write-Host "  $IMG_LATEST"
+          Write-Host "Current Directory: $(Get-Location)"
+
+          docker push $IMG_SHA
+          docker push $IMG_LATEST
+
+          # Optional: Clean up local images after pushing
+          docker rmi $IMG_SHA
+          docker rmi $IMG_LATEST
