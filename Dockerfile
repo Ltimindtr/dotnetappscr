@@ -3,7 +3,7 @@
 FROM mcr.microsoft.com/dotnet/framework/aspnet:4.8-windowsservercore-ltsc2022
 
 # Copy a minimal static site into the default IIS web root
-COPY HelloWorldApp/ /inetpub/HelloWorldApp/
+COPY HelloWorldApp/ /inetpub/wwwroot/
 
 # Expose HTTP
 EXPOSE 80
