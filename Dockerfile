@@ -2,12 +2,8 @@
 # Windows container base for ASP.NET 4.8 + IIS
 FROM mcr.microsoft.com/dotnet/framework/aspnet:4.8-windowsservercore-ltsc2022
 
-# Set the working directory inside the container
-WORKDIR /inetpub/wwwroot
-
-# Copy the published app into the container.
-# Make sure your CI/CD or local steps produce ./publish prior to docker build.
-COPY ./publish/ /inetpub/wwwroot/
+# Copy a minimal static site into the default IIS web root
+COPY wwwroot/ /inetpub/wwwroot/
 
 # Expose HTTP
 EXPOSE 80
