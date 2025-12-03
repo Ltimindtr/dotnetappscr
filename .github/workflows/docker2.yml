@@ -1,26 +1,28 @@
-name: Build & Push Docker Image to ACR (Windows Service Principal)
+name: Build & Push Docker Image to ACR (Windows OIDC)
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master ]  # Change to 'main' if you're using that as the default branch
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
       id-token: write   # Allow using OIDC for authentication
-      contents: read
+      contents: read    # Read contents of the repository
 
     env:
-      AZURE_ACR_NAME:         ${{ secrets.AZURE_ACR_NAME }}  # ACR Name
+      AZURE_ACR_NAME:         ${{ secrets.AZURE_ACR_NAME }}  # Your Azure Container Registry Name (ACR)
       IMAGE_NAME:             hello-aspnet48
       IMAGE_TAG_SHA:          ${{ github.sha }}
       IMAGE_LATEST:           latest
 
     steps:
+      # Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Optional: DNS check for ACR to ensure it's reachable
       - name: DNS check for ACR (optional)
         shell: pwsh
         run: |
@@ -30,24 +32,26 @@ jobs:
           Write-Host "Testing DNS for $fqdn"
           Resolve-DnsName $fqdn -ErrorAction Stop | Format-Table
 
-      - name: Azure login (OIDC - Azure CLI)
+      # Azure login using OIDC authentication (GitHub automatically handles it)
+      - name: Azure login (OIDC Authentication)
         uses: azure/login@v2
         with:
-          auth-type: "azurecli"   # Use OIDC authentication
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}  # Ensure subscription ID is set in secrets
 
+      # ACR login using Azure CLI
       - name: ACR login (Azure CLI)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           az acr login --name $env:AZURE_ACR_NAME
 
+      # Build Docker image (Windows)
       - name: Build Docker image (Windows)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not $env:IMAGE_TAG_SHA) { throw "IMAGE_TAG_SHA not set" }
-          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # FQDN
+          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # Fully Qualified Domain Name (FQDN)
           $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
           $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
           $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
@@ -59,6 +63,7 @@ jobs:
 
           docker build -t $IMG_SHA -t $IMG_LATEST .
 
+      # Push the Docker image to ACR
       - name: Push image to ACR
         shell: pwsh
         run: |
