@@ -1,5 +1,1 @@
 # keep published/ in the build context
-bin/
-obj/
-*.user
-*.suo
