@@ -1,4 +1,4 @@
-name: Build & Push Docker Image to ACR (Windows OIDC)
+name: Build & Push Docker Image to ACR (Windows Service Principal)
 
 on:
   push:
@@ -8,21 +8,28 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      id-token: write   # Allow using OIDC for authentication
+      id-token: write   # Harmless, enabled; useful if you later switch to OIDC
       contents: read    # Read contents of the repository
 
     env:
-      AZURE_ACR_NAME:         ${{ secrets.AZURE_ACR_NAME }}  # Your Azure Container Registry Name (ACR)
-      IMAGE_NAME:             hello-aspnet48
-      IMAGE_TAG_SHA:          ${{ github.sha }}
-      IMAGE_LATEST:           latest
+      # Service Principal credentials (populate in repo env or use secrets-to-env mapping)
+      AZURE_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID:        ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_SECRET:    ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID:  ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ACR and image info
+      AZURE_ACR_NAME:        ${{ secrets.AZURE_ACR_NAME }}         # e.g., myregistry
+      IMAGE_NAME:      hello-aspnet48
+      IMAGE_TAG_SHA:   ${{ github.sha }}
+      IMAGE_LATEST:    latest
 
     steps:
-      # Checkout the repository
+      # Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Optional: DNS check for ACR to ensure it's reachable
+      # DNS check for ACR (optional)
       - name: DNS check for ACR (optional)
         shell: pwsh
         run: |
@@ -32,14 +39,17 @@ jobs:
           Write-Host "Testing DNS for $fqdn"
           Resolve-DnsName $fqdn -ErrorAction Stop | Format-Table
 
-      # Azure login using OIDC authentication (GitHub automatically handles it)
-      - name: Azure login (OIDC Authentication)
+      # Azure login (Service Principal)
+      - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}  # Ensure subscription ID is set in secrets
+          client-id:        ${{ env.AZURE_CLIENT_ID }}
+          tenant-id:        ${{ env.AZURE_TENANT_ID }}
+          client-secret:    ${{ env.AZURE_CLIENT_SECRET }}
+          subscription-id:  ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      # ACR login using Azure CLI
-      - name: ACR login (Azure CLI)
+      # ACR login (Service Principal)
+      - name: ACR login (Service Principal)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -51,7 +61,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not $env:IMAGE_TAG_SHA) { throw "IMAGE_TAG_SHA not set" }
-          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # Fully Qualified Domain Name (FQDN)
+          $REG   = "$($env:AZURE_ACR_NAME).azurecr.io"   # <-- FQDN
           $SHA7  = $env:IMAGE_TAG_SHA.Substring(0,7)
           $IMG_SHA    = "$REG/$($env:IMAGE_NAME):$SHA7"
           $IMG_LATEST = "$REG/$($env:IMAGE_NAME):$($env:IMAGE_LATEST)"
@@ -63,7 +73,11 @@ jobs:
 
           docker build -t $IMG_SHA -t $IMG_LATEST .
 
-      # Push the Docker image to ACR
+          # Fail fast if tags not present locally
+          docker image inspect $IMG_SHA    | Out-Null
+          docker image inspect $IMG_LATEST | Out-Null
+
+      # Push image to ACR
       - name: Push image to ACR
         shell: pwsh
         run: |
@@ -80,7 +94,3 @@ jobs:
 
           docker push $IMG_SHA
           docker push $IMG_LATEST
-
-          # Optional: Clean up local images after pushing
-          docker rmi $IMG_SHA
-          docker rmi $IMG_LATEST
